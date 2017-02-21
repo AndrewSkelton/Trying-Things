@@ -1,0 +1,165 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load_libraries}
+library(MatrixEQTL)
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
+
+# All Against All
+
+## Data Prep
+The toy data is already prepared, consisting of: a SNP matrix, Gene Expression Matrix, and Covariates file. In the first instance, we don't need the annotation as this exercise is an *all against all* analysis. The P value threshold is set at 0.01, however it's unclear if this is applied to the FDR correction of the *raw* P value.
+
+```{r settings}
+useModel             <- modelLINEAR
+SNP_file_name        <- "./SNP.txt"
+expression_file_name <- "./GE.txt"
+covariates_file_name <- "./Covariates.txt"
+output_file_name     <-  tempfile()
+
+pvOutputThreshold    <- 1e-2
+errorCovariance      <- numeric()
+```
+
+## Toy Data
+
+```{r load_genos}
+snps                    <- SlicedData$new()
+snps$fileDelimiter      <- "\t"
+snps$fileOmitCharacters <- "NA"
+snps$fileSkipRows       <- 1        
+snps$fileSkipColumns    <- 1 
+snps$fileSliceSize      <- 2000 
+snps$LoadFile(SNP_file_name)
+snps
+```
+
+### SNPs
+SNP data parameters are quite flexible, and seem to contribute to processing efficiency, such as `fileSliceSize`, which could be the amount of SNPs read into memory at once - potentially a significant bottleneck. The toy SNP dataset has `r nrow(snps)` observations. 
+
+```{r load_exp}
+gene                    <- SlicedData$new()
+gene$fileDelimiter      <- "\t"
+gene$fileOmitCharacters <- "NA"
+gene$fileSkipRows       <- 1 
+gene$fileSkipColumns    <- 1
+gene$fileSliceSize      <- 2000
+gene$LoadFile(expression_file_name)
+gene
+```
+
+### Expression
+Similar to the SNP data, well parameterised, and interestingly, the `fileSliceSize` parameter isn't engine level, and can be unbalanced. The toy expression dataset has `r nrow(gene)` observations. 
+
+
+```{r load_covariates}
+cvrt                    <- SlicedData$new();
+cvrt$fileDelimiter      <- "\t"
+cvrt$fileOmitCharacters <- "NA"
+cvrt$fileSkipRows       <- 1
+cvrt$fileSkipColumns    <- 1
+if(length(covariates_file_name)>0) {
+  cvrt$LoadFile(covariates_file_name)
+}
+cvrt
+```
+
+### Covariates
+Covariates are extremely useful, and follow a similar convention to reading the SNP and expression data. This may require transposing relative to the data that's currently in use. 
+
+
+## Running the MatrixEQTL Engine
+After all the prep, there is an engine level call, which is typical for some complex processes, such as GATK for example. Heavily parameterised, it will be worth exploring. It executes extremely quickly, albeit with a tiny dataset in this case, but in <1/100th of a second. Seems that the engine creates a persistent connection to the output file - an interesting programming convention in R, possibly implemented via RC++. 
+
+
+```{r engineRun}
+me      <- Matrix_eQTL_engine(snps              = snps,
+                              gene              = gene,
+                              cvrt              = cvrt,
+                              output_file_name  = output_file_name,
+                              pvOutputThreshold = pvOutputThreshold,
+                              useModel          = useModel, 
+                              errorCovariance   = errorCovariance, 
+                              verbose           = T,
+                              pvalue.hist       = T,
+                              min.pv.by.genesnp = F,
+                              noFDRsaveMemory   = F)
+unlink(output_file_name)
+```
+
+
+## Results
+P value histogram can be plotted with ease, and the results come in a handy dataframe, that will need a bit of annotation adding. 
+
+
+```{r pval_hist}
+plot(me)
+results <- me$all$eqtls %>%
+           as.data.frame
+results
+```
+
+
+
+# Stratifying for Cis and Trans eQTLs
+
+```{r ct_dataprep, message=FALSE}
+snps_location_file_name <- "./snpsloc.txt"
+gene_location_file_name <- "./geneloc.txt"
+
+snpspos                 <- read_tsv(snps_location_file_name) %>% as.data.frame
+genepos                 <- read_tsv(gene_location_file_name) %>% as.data.frame
+
+output_file_name_cis    <- tempfile()
+output_file_name_tra    <- tempfile()
+
+pvOutputThreshold_cis   <- 2e-2
+pvOutputThreshold_tra   <- 1e-2
+
+cisDist                 <- 1e6
+```
+
+## Data Prep
+There are a few difference between the "all against all" approach, in contrast to the cis / trans paradigm, and as such we need some additional parameters. We need the annotation for the SNPs and Expression locations, along with seperate output files for cis and trans results. Two different thresholds need to be set for the trans (`r pvOutputThreshold_tra`) and cis (`r pvOutputThreshold_cis`), in addition to the spanning region for cis-eQTLs. The SNP and Expression sets that were read in previously stay the same, as their initialisation is static, they're reference objects. 
+
+```{r ct_engineRun}
+me      <- Matrix_eQTL_main(snps                  = snps,
+                            gene                  = gene,
+                            cvrt                  = cvrt,
+                            output_file_name      = output_file_name_tra,
+                            pvOutputThreshold     = pvOutputThreshold_tra,
+                            useModel              = useModel, 
+                            errorCovariance       = errorCovariance, 
+                            verbose               = T,
+                            output_file_name.cis  = output_file_name_cis,
+                            pvOutputThreshold.cis = pvOutputThreshold_cis,
+                            snpspos               = snpspos, 
+                            genepos               = genepos,
+                            cisDist               = cisDist,
+                            pvalue.hist           = "qqplot",
+                            min.pv.by.genesnp     = F,
+                            noFDRsaveMemory       = F)
+
+unlink(output_file_name_tra)
+unlink(output_file_name_cis)
+```
+
+## Cis / Trans Run
+Similar to the all against all run, but double the time to 200ths of a second - still an impressive time. 
+
+```{r ct_results}
+results_cis   <- me$cis$eqtls  %>% as.data.frame
+results_trans <- me$trans$eqtls %>% as.data.frame
+results_cis; results_trans
+
+plot(me)
+```
+
+
+
